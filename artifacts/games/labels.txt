@@ -1,0 +1,11 @@
+action
+adventure
+casual
+indie
+other
+racing
+rpg
+simulation
+sports
+strategy
+violent
