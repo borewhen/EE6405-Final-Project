@@ -817,6 +817,8 @@ with pred_col_left:
 
 with pred_col_right:
     st.caption("Requires `artifacts/<domain>/model.ts`, `labels.txt`, and `preprocessor.json`.")
+    lime_enabled = st.checkbox("Run LIME explanation", value=True)
+    lime_samples = st.slider("LIME samples", min_value=200, max_value=3000, value=1000, step=100, help="Lower values are faster and use less memory")
 
 go = st.button("Predict Genre", type="primary")
 
@@ -844,42 +846,46 @@ if go:
             )
 
             # Auto-run LIME on predicted class
-            st.markdown("### LIME explanation (predicted class)")
-            try:
-                logger.info("Entering LIME explanation block")
-                if LimeTextExplainer is None:
-                    logger.warning("LIME not installed or failed to import")
-                    st.info("LIME not installed. Please add 'lime' to your environment to enable explanations.")
-                else:
-                    logger.debug("Constructing predict function for LIME")
-                    predict_fn, labels, _ = _make_predict_fn(domain)
-                    logger.debug("Predict function ready. labels_count=%d", len(labels))
-                    target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
-                    logger.info("Target index for LIME: %d (%s)", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range")
-                    explainer = LimeTextExplainer(class_names=labels)
-                    logger.debug("LimeTextExplainer created")
-                    exp = explainer.explain_instance(
-                        user_text or "",
-                        predict_fn,
-                        labels=[target_idx],
-                        num_features=10,
-                    )
-                    logger.info("LIME explanation computed successfully")
-                    weights = exp.as_list(label=target_idx)
-                    logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
-                    lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
-                    st.dataframe(lime_df, use_container_width=True, height=280)
-                    try:
-                        st.bar_chart(lime_df.set_index("token/phrase"))
-                    except Exception:
-                        logger.debug("Bar chart rendering for LIME weights failed; continuing")
-                        pass
-            except FileNotFoundError as e:
-                logger.warning("Artifacts missing for LIME: %s", e)
-                st.info(str(e))
-            except Exception as e:
-                logger.exception("LIME explanation failed with an exception")
-                st.info(f"LIME explanation unavailable: {e}")
+            if lime_enabled:
+                st.markdown("### LIME explanation (predicted class)")
+                try:
+                    logger.info("Entering LIME explanation block")
+                    if LimeTextExplainer is None:
+                        logger.warning("LIME not installed or failed to import")
+                        st.info("LIME not installed. Please add 'lime' to your environment to enable explanations.")
+                    else:
+                        logger.debug("Constructing predict function for LIME")
+                        predict_fn, labels, _ = _make_predict_fn(domain)
+                        logger.debug("Predict function ready. labels_count=%d", len(labels))
+                        target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
+                        logger.info("Target index for LIME: %d (%s); samples=%d", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range", int(lime_samples))
+                        explainer = LimeTextExplainer(class_names=labels)
+                        logger.debug("LimeTextExplainer created")
+                        exp = explainer.explain_instance(
+                            user_text or "",
+                            predict_fn,
+                            labels=[target_idx],
+                            num_features=10,
+                            num_samples=int(lime_samples),
+                        )
+                        logger.info("LIME explanation computed successfully")
+                        weights = exp.as_list(label=target_idx)
+                        logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
+                        lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
+                        st.dataframe(lime_df, use_container_width=True, height=280)
+                        try:
+                            st.bar_chart(lime_df.set_index("token/phrase"))
+                        except Exception:
+                            logger.debug("Bar chart rendering for LIME weights failed; continuing")
+                            pass
+                except FileNotFoundError as e:
+                    logger.warning("Artifacts missing for LIME: %s", e)
+                    st.info(str(e))
+                except Exception as e:
+                    logger.exception("LIME explanation failed with an exception")
+                    st.info(f"LIME explanation unavailable: {e}")
+            else:
+                st.info("LIME explanation disabled.")
         except FileNotFoundError as e:
             logger.warning("Prediction artifacts missing: %s", e)
             st.warning(str(e))
