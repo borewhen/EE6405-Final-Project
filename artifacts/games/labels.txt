@@ -1,7 +1,7 @@
 action
 adventure
-casual
-indie
+gore
+massively multiplayer
 other
 racing
 rpg

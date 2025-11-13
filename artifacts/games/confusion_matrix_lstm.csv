@@ -1,0 +1,12 @@
+true,action,adventure,gore,massively multiplayer,other,racing,rpg,simulation,sports,strategy,violent
+action,1039,256,1,33,100,39,132,42,47,176,1
+adventure,76,466,0,5,69,3,102,28,3,48,0
+gore,0,1,0,0,1,0,2,0,0,0,0
+massively multiplayer,7,1,0,13,0,0,4,3,2,12,0
+other,101,122,0,2,181,5,8,23,11,26,0
+racing,9,0,0,0,2,51,0,4,5,0,0
+rpg,18,15,0,2,3,0,69,7,1,40,0
+simulation,32,33,0,6,39,6,4,104,27,123,0
+sports,2,0,0,0,2,0,0,4,21,3,0
+strategy,27,11,0,3,45,1,6,7,3,135,0
+violent,0,1,0,0,0,0,0,0,0,0,0

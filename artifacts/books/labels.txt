@@ -1,10 +1,7 @@
 business
 cooking
-fiction
-general
 history
 juvenile
-nonfiction
 other
 religion
 romance
