@@ -816,7 +816,6 @@ with pred_col_left:
     )
 
 with pred_col_right:
-    st.caption("Requires `artifacts/<domain>/model.ts`, `labels.txt`, and `preprocessor.json`.")
     lime_enabled = st.checkbox("Run LIME explanation", value=True)
     LIME_FIXED_SAMPLES = 500
 
