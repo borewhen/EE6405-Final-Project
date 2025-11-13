@@ -1,0 +1,8 @@
+business
+cooking
+history
+juvenile
+other
+religion
+romance
+science

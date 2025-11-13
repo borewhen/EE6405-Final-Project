@@ -1,0 +1,11 @@
+action
+adventure
+gore
+massively multiplayer
+other
+racing
+rpg
+simulation
+sports
+strategy
+violent

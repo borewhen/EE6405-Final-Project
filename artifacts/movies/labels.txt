@@ -1,0 +1,11 @@
+action
+adventure
+comedy
+crime
+drama
+horror
+musical
+other
+romance
+thriller
+western
