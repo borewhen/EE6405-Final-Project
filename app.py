@@ -818,7 +818,7 @@ with pred_col_left:
 with pred_col_right:
     st.caption("Requires `artifacts/<domain>/model.ts`, `labels.txt`, and `preprocessor.json`.")
     lime_enabled = st.checkbox("Run LIME explanation", value=True)
-    lime_samples = st.slider("LIME samples", min_value=200, max_value=3000, value=1000, step=100, help="Lower values are faster and use less memory")
+    LIME_FIXED_SAMPLES = 500
 
 go = st.button("Predict Genre", type="primary")
 
@@ -858,7 +858,7 @@ if go:
                         predict_fn, labels, _ = _make_predict_fn(domain)
                         logger.debug("Predict function ready. labels_count=%d", len(labels))
                         target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
-                        logger.info("Target index for LIME: %d (%s); samples=%d", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range", int(lime_samples))
+                        logger.info("Target index for LIME: %d (%s); samples=%d", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range", LIME_FIXED_SAMPLES)
                         explainer = LimeTextExplainer(class_names=labels)
                         logger.debug("LimeTextExplainer created")
                         exp = explainer.explain_instance(
@@ -866,7 +866,7 @@ if go:
                             predict_fn,
                             labels=[target_idx],
                             num_features=10,
-                            num_samples=int(lime_samples),
+                            num_samples=LIME_FIXED_SAMPLES,
                         )
                         logger.info("LIME explanation computed successfully")
                         weights = exp.as_list(label=target_idx)
