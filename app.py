@@ -27,6 +27,7 @@ try:
 except Exception:
     shap = None  # type: ignore
 import re
+import logging
 
 
 # ----------------------------
@@ -37,6 +38,18 @@ st.set_page_config(
     page_icon="📊",
     layout="wide",
 )
+
+
+# ----------------------------
+# Logging
+# ----------------------------
+if "_log_configured" not in st.session_state:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    st.session_state["_log_configured"] = True
+logger = logging.getLogger("ee6405_app")
 
 
 # ----------------------------
@@ -85,6 +98,13 @@ st.title("EE6405 Model Evaluator")
 st.text("AY2025/26 Semester 1, Table A8")
 st.text("Dave Marteen Gunawan, Jin Zixuan, John Ang Yi Heng, Shen Bowen, Wu Huaye")
 domain = st.selectbox("Select domain", ["Books", "Movies", "Games"], index=0)
+
+debug_logging = st.checkbox("Enable debug logging", value=False, help="Writes detailed logs to your console")
+if debug_logging:
+    logger.setLevel(logging.DEBUG)
+else:
+    logger.setLevel(logging.INFO)
+logger.info("Domain selected: %s", domain)
 
 metrics_df: Optional[pd.DataFrame] = None
 conf_mat_df: Optional[pd.DataFrame] = None
@@ -806,7 +826,9 @@ if go:
     else:
         # Trained weights path: requires standardized bundle artifacts/{domain}/
         try:
+            logger.info("Starting prediction for domain=%s, text_len=%d", domain, len(user_text or ""))
             pred_label, model_labels, probabilities = predict_with_weights(domain, user_text)
+            logger.info("Prediction complete: pred_label=%s, num_labels=%d", pred_label, len(model_labels))
             st.success(f"Predicted genre: {pred_label}")
             prob_df = pd.DataFrame(
                 {"label": model_labels, "probability": probabilities.astype(float)}
@@ -824,30 +846,43 @@ if go:
             # Auto-run LIME on predicted class
             st.markdown("### LIME explanation (predicted class)")
             try:
+                logger.info("Entering LIME explanation block")
                 if LimeTextExplainer is None:
+                    logger.warning("LIME not installed or failed to import")
                     st.info("LIME not installed. Please add 'lime' to your environment to enable explanations.")
                 else:
+                    logger.debug("Constructing predict function for LIME")
                     predict_fn, labels, _ = _make_predict_fn(domain)
+                    logger.debug("Predict function ready. labels_count=%d", len(labels))
                     target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
+                    logger.info("Target index for LIME: %d (%s)", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range")
                     explainer = LimeTextExplainer(class_names=labels)
+                    logger.debug("LimeTextExplainer created")
                     exp = explainer.explain_instance(
                         user_text or "",
                         predict_fn,
                         labels=[target_idx],
                         num_features=10,
                     )
+                    logger.info("LIME explanation computed successfully")
                     weights = exp.as_list(label=target_idx)
+                    logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
                     lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
                     st.dataframe(lime_df, use_container_width=True, height=280)
                     try:
                         st.bar_chart(lime_df.set_index("token/phrase"))
                     except Exception:
+                        logger.debug("Bar chart rendering for LIME weights failed; continuing")
                         pass
             except FileNotFoundError as e:
+                logger.warning("Artifacts missing for LIME: %s", e)
                 st.info(str(e))
             except Exception as e:
+                logger.exception("LIME explanation failed with an exception")
                 st.info(f"LIME explanation unavailable: {e}")
         except FileNotFoundError as e:
+            logger.warning("Prediction artifacts missing: %s", e)
             st.warning(str(e))
         except Exception as e:
+            logger.exception("Prediction with trained weights failed")
             st.error(f"Prediction with trained weights failed: {e}")
