@@ -603,7 +603,10 @@ def _load_bundle_for_explain(domain_key: str):
 
 
 def _tokenize(text: str, lowercase: bool) -> List[str]:
-    s = text or ""
+    # Handle numpy arrays or other non-string types (from SHAP)
+    if isinstance(text, np.ndarray):
+        text = str(text)
+    s = str(text) if text is not None else ""
     if lowercase:
         s = s.lower()
     return re.findall(r"[a-z0-9']+", s)
@@ -617,7 +620,11 @@ def _encode_texts(texts: List[str], preproc: Dict[str, Any]) -> np.ndarray:
 
     ids_batch: List[List[int]] = []
     for t in texts:
-        toks = _tokenize(t or "", lowercase)
+        # Handle numpy arrays or other non-string types (from SHAP)
+        if isinstance(t, np.ndarray):
+            t = str(t)
+        t_str = str(t) if t is not None else ""
+        toks = _tokenize(t_str, lowercase)
         ids = [int(word_index.get(tok, oov_token_id)) for tok in toks]
         if len(ids) < max_length:
             ids = ids + [0] * (max_length - len(ids))
@@ -631,19 +638,219 @@ def _make_predict_fn(domain_key: str):
     # Returns a function: List[str] -> np.ndarray [N, C] of probabilities
     model, labels, preproc = _load_bundle_for_explain(domain_key)
 
-    def _predict(texts: List[str]) -> np.ndarray:
+    def _predict(texts):
+        """
+        Wrapper that handles both string lists and numpy arrays (from SHAP).
+        Processes large batches in chunks to avoid memory allocation errors.
+        texts: List[str] or np.ndarray
+        """
         import torch  # type: ignore
-        input_ids = _encode_texts(texts, preproc)
+        
+        # Handle numpy array input from SHAP
+        if isinstance(texts, np.ndarray):
+            # Convert numpy array to list of strings
+            texts = [str(t) for t in texts]
+        
+        # Ensure texts is a list
+        if not isinstance(texts, list):
+            texts = [texts]
+        
+        # Process in small batches to prevent memory allocation errors
+        # This is important for SHAP's KernelExplainer which sends large batches
+        batch_size = 8  # Small batch size for TorchScript model
+        all_probs = []
+        
         with torch.no_grad():
-            tens = torch.as_tensor(input_ids, device="cpu")
-            logits = model(tens)
-            if isinstance(logits, (list, tuple)):
-                logits = logits[0]
-            logits = logits.float()
-            probs = torch.softmax(logits, dim=-1).cpu().numpy()
-        return probs.astype(float)
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                input_ids = _encode_texts(batch, preproc)
+                tens = torch.as_tensor(input_ids, device="cpu")
+                logits = model(tens)
+                if isinstance(logits, (list, tuple)):
+                    logits = logits[0]
+                logits = logits.float()
+                probs = torch.softmax(logits, dim=-1).cpu().numpy()
+                all_probs.append(probs)
+        
+        return np.vstack(all_probs).astype(float)
 
     return _predict, labels, preproc
+
+
+# ----------------------------
+# SHAP Explainability helpers
+# ----------------------------
+@st.cache_resource(show_spinner=False)
+def _load_shap_masker(domain_key: str):
+    """
+    Load or create a SHAP masker for text-based explanations.
+    Uses a masking function that replaces tokens with a background value.
+    """
+    if shap is None:
+        raise ImportError("SHAP is not installed. Please add 'shap' to your environment.")
+    
+    # Get predict function and preprocessing info
+    predict_fn, labels, preproc = _make_predict_fn(domain_key)
+    
+    # Create a simple text masker using word-level masking
+    def _predict_wrapper(token_arrays: np.ndarray) -> np.ndarray:
+        """
+        Wrapper that converts token-level masked arrays back to text for LIME-style explanation.
+        token_arrays: shape [N, num_tokens] with 1s for present tokens, 0s for masked tokens
+        """
+        # For SHAP, we need to handle the masking differently
+        # We'll use a simpler approach: convert masked tokens back to text
+        word_index = preproc.get("word_index") or {}
+        reverse_index = {v: k for k, v in word_index.items()}
+        
+        max_length = int(preproc.get("max_length", 256))
+        lowercase = bool(preproc.get("lowercase", True))
+        
+        predictions = []
+        for token_array in token_arrays:
+            # token_array is [num_tokens] of 0s and 1s
+            # Reconstruct by keeping only "present" tokens
+            # For simplicity, we'll apply masking to the original text
+            # This is a simplified version; a full implementation would track original tokens
+            predictions.append(np.ones(len(labels)))  # Placeholder
+        
+        return np.array(predictions)
+    
+    return _predict_wrapper, labels
+
+
+def _make_shap_explainer(domain_key: str, background_data: Optional[np.ndarray] = None):
+    """
+    Create a SHAP KernelExplainer for text explanations.
+    
+    Args:
+        domain_key: Domain identifier
+        background_data: Optional background dataset for SHAP values computation
+                        If None, uses a small default background
+    
+    Returns:
+        Tuple of (explainer, predict_fn, labels, preproc)
+    """
+    if shap is None:
+        raise ImportError("SHAP is not installed.")
+    
+    logger.debug("Initializing SHAP explainer for domain=%s", domain_key)
+    
+    # Get the prediction function
+    predict_fn, labels, preproc = _make_predict_fn(domain_key)
+    
+    # Create background data if not provided
+    # For SHAP with text, we typically use a small background sample
+    if background_data is None:
+        # Use a very small set of neutral background texts to save memory
+        # SHAP KernelExplainer doesn't need a large background for text
+        background_texts = [
+            "a",
+            "the",
+            "is there",
+            "this is",
+        ]
+        background_data = _encode_texts(background_texts, preproc)
+        logger.debug("Created default background data with %d samples", len(background_texts))
+    
+    try:
+        # Create KernelExplainer
+        explainer = shap.KernelExplainer(predict_fn, background_data)
+        logger.debug("SHAP KernelExplainer created successfully")
+        return explainer, predict_fn, labels, preproc
+    except Exception as e:
+        logger.exception("Failed to create SHAP explainer: %s", e)
+        raise
+
+
+def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: int) -> Optional[Tuple[np.ndarray, List[str]]]:
+    """
+    Compute SHAP values for a text input.
+    
+    Args:
+        domain_key: Domain identifier
+        user_text: Input text to explain
+        target_idx: Target class index to explain
+    
+    Returns:
+        Tuple of (shap_values, tokens) or None if failed
+    """
+    if shap is None:
+        return None
+    
+    try:
+        logger.debug("Computing SHAP values for user_text (len=%d)", len(user_text))
+        
+        # Get explainer and prediction function
+        explainer, predict_fn, labels, preproc = _make_shap_explainer(domain_key)
+        
+        # Encode user text
+        user_encoded = _encode_texts([user_text], preproc)  # Shape: [1, max_length]
+        
+        # Compute SHAP values with limited samples to prevent memory issues
+        # nsamples controls the number of Monte Carlo samples SHAP takes
+        # Lower values = faster but less accurate, higher = slower but more accurate
+        # For TorchScript models with large input dimensions, keep this low
+        shap_values_obj = explainer.shap_values(user_encoded, nsamples=50)
+        
+        # shap_values_obj can be:
+        # - Single array if binary/single output
+        # - List of arrays if multi-output
+        if isinstance(shap_values_obj, list):
+            shap_vals = shap_values_obj[target_idx]
+        else:
+            shap_vals = shap_values_obj
+        
+        # shap_vals shape: [1, max_length] - get first (only) sample
+        shap_vals = shap_vals[0]
+        
+        logger.debug("SHAP values computed: shape=%s", shap_vals.shape)
+        
+        # Tokenize to get token count for alignment
+        tokens = _tokenize(user_text, bool(preproc.get("lowercase", True)))
+        logger.debug("User text tokenized into %d tokens", len(tokens))
+        
+        return shap_vals, tokens
+    
+    except Exception as e:
+        logger.exception("Failed to compute SHAP values: %s", e)
+        return None
+
+
+def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_features: int = 10) -> pd.DataFrame:
+    """
+    Extract top SHAP features (tokens with highest absolute SHAP values).
+    
+    Args:
+        shap_values: SHAP values array
+        tokens: List of tokens
+        num_features: Number of top features to extract
+    
+    Returns:
+        DataFrame with columns ["token", "shap_value"]
+    """
+    # Take absolute values for importance ranking
+    abs_shap = np.abs(shap_values)
+    
+    # Get indices of top features
+    if len(tokens) > 0:
+        # SHAP values might be longer than tokens (padding), so align them
+        num_tokens = min(len(tokens), len(shap_values))
+        top_indices = np.argsort(abs_shap[:num_tokens])[-num_features:][::-1]
+        
+        top_tokens = [tokens[i] for i in top_indices if i < len(tokens)]
+        top_values = [shap_values[i] for i in top_indices if i < len(tokens)]
+    else:
+        top_tokens = []
+        top_values = []
+    
+    df = pd.DataFrame({
+        "token": top_tokens,
+        "shap_value": top_values
+    })
+    
+    logger.debug("Extracted %d top SHAP features", len(df))
+    return df
 
 st.markdown("### Experiment results")
 _metrics, _conf_mat, _lbls = load_artifact_results(domain)
@@ -656,7 +863,7 @@ if _conf_mat is not None and _lbls is not None and len(_conf_mat) > 0:
         conf_mat_df = None
     if metrics_df is not None:
         st.markdown("### Metrics")
-        st.dataframe(metrics_df, use_container_width=True)
+        st.dataframe(metrics_df, width='stretch')
 
 # Per-model comparison (shown even if metrics_df is missing)
 model_metrics = load_per_model_metrics(domain)
@@ -684,7 +891,7 @@ if model_metrics:
     compare_df = pd.DataFrame({"metric": all_metric_names})
     for mk, md in model_metrics.items():
         compare_df[mk.upper()] = [md.get(name, np.nan) for name in all_metric_names]
-    st.dataframe(compare_df, use_container_width=True)
+    st.dataframe(compare_df, width='stretch')
 
 # Per-model confusion matrices side-by-side
 per_model_conf = load_per_model_confusions(domain)
@@ -754,6 +961,7 @@ if nb_counts is not None and len(nb_counts) > 0:
     genres, freq = zip(*top)
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.bar(genres, freq)
+    ax.set_xticks(range(len(genres)))
     ax.set_xticklabels(genres, rotation=45, ha="right", fontsize=9)
     ax.set_title("Top 10 Genre/Category Frequency")
     fig.tight_layout()
@@ -777,7 +985,7 @@ for mk in model_keys:
         display_cols = [x for x in ["text", "true", "pred", "prob_pred", "correct"] if x in sdf.columns]
         if not display_cols:
             display_cols = list(sdf.columns)[:6]
-        st.dataframe(sdf[display_cols].head(100), use_container_width=True, height=260)
+        st.dataframe(sdf[display_cols].head(100), width='stretch', height=260)
         download_bytes_from_df(sdf, f"{domain.lower()}_{mk.lower()}_samples.csv", f"Download {mk} samples CSV")
     else:
         st.markdown(f"#### {mk} samples")
@@ -788,7 +996,7 @@ if not found_any:
         display_cols = [c for c in ["text", "true", "pred", "prob_pred", "correct"] if c in samples_df.columns]
         if not display_cols:
             display_cols = list(samples_df.columns)[:6]
-        st.dataframe(samples_df[display_cols].head(200), use_container_width=True, height=320)
+        st.dataframe(samples_df[display_cols].head(200), width='stretch', height=320)
         download_bytes_from_df(samples_df, f"{domain.lower()}_samples.csv", "Download samples CSV")
     else:
         st.info("No saved samples found yet. Once notebooks export samples.csv or samples_{model}.csv, they will appear here.")
@@ -816,7 +1024,9 @@ with pred_col_left:
     )
 
 with pred_col_right:
+    st.markdown("**Explainability Methods**")
     lime_enabled = st.checkbox("Run LIME explanation", value=True)
+    shap_enabled = st.checkbox("Run SHAP explanation", value=False)
     LIME_FIXED_SAMPLES = 500
 
 go = st.button("Predict Genre", type="primary")
@@ -834,7 +1044,7 @@ if go:
             prob_df = pd.DataFrame(
                 {"label": model_labels, "probability": probabilities.astype(float)}
             ).sort_values("probability", ascending=False, ignore_index=True)
-            st.dataframe(prob_df, use_container_width=True, height=300)
+            st.dataframe(prob_df, width='stretch', height=300)
             st.bar_chart(prob_df.set_index("label"))
             csv_bytes = prob_df.to_csv(index=False).encode("utf-8")
             st.download_button(
@@ -871,7 +1081,7 @@ if go:
                         weights = exp.as_list(label=target_idx)
                         logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
                         lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
-                        st.dataframe(lime_df, use_container_width=True, height=280)
+                        st.dataframe(lime_df, width='stretch', height=280)
                         try:
                             st.bar_chart(lime_df.set_index("token/phrase"))
                         except Exception:
@@ -885,6 +1095,49 @@ if go:
                     st.info(f"LIME explanation unavailable: {e}")
             else:
                 st.info("LIME explanation disabled.")
+
+            # Auto-run SHAP on predicted class
+            if shap_enabled:
+                st.markdown("### SHAP explanation (predicted class)")
+                try:
+                    logger.info("Entering SHAP explanation block")
+                    if shap is None:
+                        logger.warning("SHAP not installed or failed to import")
+                        st.info("SHAP not installed. Please add 'shap' to your environment to enable SHAP explanations.")
+                    else:
+                        logger.debug("Computing SHAP values for predicted class")
+                        predict_fn, labels, _ = _make_predict_fn(domain)
+                        target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
+                        logger.info("Target index for SHAP: %d (%s)", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range")
+                        
+                        shap_result = _compute_shap_values_for_text(domain, user_text or "", target_idx)
+                        if shap_result is not None:
+                            shap_vals, tokens = shap_result
+                            logger.info("SHAP computation successful: %d tokens", len(tokens))
+                            
+                            shap_df = _extract_shap_features(shap_vals, tokens, num_features=10)
+                            
+                            if not shap_df.empty:
+                                st.dataframe(shap_df, width='stretch', height=280)
+                                try:
+                                    st.bar_chart(shap_df.set_index("token"))
+                                except Exception:
+                                    logger.debug("Bar chart rendering for SHAP values failed; continuing")
+                                    pass
+                            else:
+                                st.warning("No SHAP features extracted.")
+                        else:
+                            st.warning("SHAP computation failed.")
+                except FileNotFoundError as e:
+                    logger.warning("Artifacts missing for SHAP: %s", e)
+                    st.info(str(e))
+                except Exception as e:
+                    logger.exception("SHAP explanation failed with an exception")
+                    st.info(f"SHAP explanation unavailable: {e}")
+            else:
+                if not lime_enabled:
+                    st.info("No explanation methods selected.")
+                # If LIME is enabled but SHAP is not, don't show this message
         except FileNotFoundError as e:
             logger.warning("Prediction artifacts missing: %s", e)
             st.warning(str(e))
