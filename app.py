@@ -838,8 +838,10 @@ def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_featu
         num_tokens = min(len(tokens), len(shap_values))
         top_indices = np.argsort(abs_shap[:num_tokens])[-num_features:][::-1]
         
-        top_tokens = [tokens[i] for i in top_indices if i < len(tokens)]
-        top_values = [shap_values[i] for i in top_indices if i < len(tokens)]
+        # Convert numpy indices to list and filter to valid token indices
+        top_indices_list = [int(i) for i in top_indices if int(i) < len(tokens)]
+        top_tokens = [tokens[i] for i in top_indices_list]
+        top_values = [float(shap_values[i]) for i in top_indices_list]
     else:
         top_tokens = []
         top_values = []
