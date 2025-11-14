@@ -843,11 +843,19 @@ def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_featu
         
         # Extract tokens and values for valid indices
         for idx in top_indices:
-            # Convert numpy scalar to Python int safely
-            idx_int = int(idx)
+            # Convert numpy type to Python int safely using .item() if available
+            if hasattr(idx, 'item'):
+                idx_int = idx.item()
+            else:
+                idx_int = int(idx)
+            
             if idx_int < len(tokens):
                 top_tokens.append(tokens[idx_int])
-                top_values.append(float(shap_values[idx_int]))
+                # Also safely extract the shap value
+                shap_val = shap_values[idx_int]
+                if hasattr(shap_val, 'item'):
+                    shap_val = shap_val.item()
+                top_values.append(float(shap_val))
     
     df = pd.DataFrame({
         "token": top_tokens,
