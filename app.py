@@ -837,26 +837,29 @@ def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_featu
     top_values = []
     
     if len(tokens) > 0:
-        # SHAP values might be longer than tokens (padding), so align them
-        num_tokens = min(len(tokens), len(shap_values))
-        top_indices = np.argsort(abs_shap[:num_tokens])[-num_features:][::-1]
-        
-        # Extract tokens and values for valid indices
-        for idx in top_indices:
-            # Convert numpy type to Python int safely using .item() if available
-            if hasattr(idx, 'item'):
-                idx_int = idx.item()
-            else:
-                idx_int = int(idx)
+            # SHAP values might be longer than tokens (padding), so align them
+            num_tokens = min(len(tokens), len(shap_values))
             
-            if idx_int < len(tokens):
-                top_tokens.append(tokens[idx_int])
-                # Also safely extract the shap value
-                shap_val = shap_values[idx_int]
-                if hasattr(shap_val, 'item'):
-                    shap_val = shap_val.item()
-                top_values.append(float(shap_val))
-    
+            # Ensure shap_values is 1D before argsort
+            # This guards against shap_values being [1, N]
+            if shap_values.ndim > 1:
+                shap_values = shap_values.ravel()
+                
+            top_indices = np.argsort(np.abs(shap_values[:num_tokens]))[-num_features:][::-1]
+            
+            # Extract tokens and values for valid indices
+            for idx in top_indices:
+                # idx is a numpy integer (e.g., np.int64).
+                # We can cast it directly to a standard Python int.
+                idx_int = int(idx)
+                
+                if idx_int < len(tokens):
+                    top_tokens.append(tokens[idx_int])
+                    
+                    # shap_values[idx_int] is a numpy float (e.g., np.float64).
+                    # We can cast it directly to a standard Python float.
+                    shap_val = float(shap_values[idx_int])
+                    top_values.append(shap_val)
     df = pd.DataFrame({
         "token": top_tokens,
         "shap_value": top_values
