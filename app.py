@@ -1156,7 +1156,32 @@ if go:
                             # max_display=10 shows top 10 features + "other"
                             # show=False prevents shap from trying to call plt.show()
                             shap.waterfall_plot(shap_explanation, max_display=10, show=False)
-                            
+
+                            logger.info("--- Inspecting original plot labels ---") # Added header
+                            for text_obj in ax.texts:
+                                try:
+                                    # Get the text, clean unicode minus (replace '−' with '-')
+                                    original_text = text_obj.get_text() # Store original text
+                                    text = original_text
+                                    if text and ord(text[0]) == 8722: 
+                                        text = "-" + text[1:]
+                                    
+                                    value = float(text)
+
+                                    # --- THIS IS THE NEW LINE ---
+                                    # Log the original string and the parsed float
+                                    logger.info(f"Original label: '{original_text}' | Parsed float: {value}")
+                                    
+                                    # Re-format to +/- 0.000 (3 decimal places) and update
+                                    text_obj.set_text(f"{value:+.3f}")
+                                except ValueError:
+                                    # Log text that we skip (e.g., feature names)
+                                    logger.debug(f"Skipping non-numeric label: '{original_text}'")
+                                    pass
+                                except ValueError:
+                                    # Ignore text that can't be converted to a float
+                                    pass
+                            logger.info("---------------------------------------") # Added footer
                             # Use st.pyplot to render the matplotlib figure in Streamlit
                             # bbox_inches='tight' cleans up whitespace
                             st.pyplot(fig, bbox_inches='tight')
