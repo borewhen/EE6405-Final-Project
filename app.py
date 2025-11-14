@@ -516,7 +516,8 @@ def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
             from collections import Counter as _Ctr
             EXCLUDE_CATEGORIES = {"fiction", "nonfiction", "general"}
             flat = [g.strip() for sub in category_list for g in sub if g and str(g).strip()]
-            filtered = [g for g in flat if g.lower() not in EXCLUDE_CATEGORIES]
+            filtered_a = [g for g in flat if g.lower() not in EXCLUDE_CATEGORIES]
+            filtered = [cat for cat, _ in Counter(filtered_a).most_common(10)]
             return _Ctr(filtered) if filtered else None
 
         elif dkey == "movies":
