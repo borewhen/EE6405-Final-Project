@@ -833,18 +833,21 @@ def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_featu
     abs_shap = np.abs(shap_values)
     
     # Get indices of top features
+    top_tokens = []
+    top_values = []
+    
     if len(tokens) > 0:
         # SHAP values might be longer than tokens (padding), so align them
         num_tokens = min(len(tokens), len(shap_values))
         top_indices = np.argsort(abs_shap[:num_tokens])[-num_features:][::-1]
         
-        # Convert numpy indices to list and filter to valid token indices
-        top_indices_list = [int(i) for i in top_indices if int(i) < len(tokens)]
-        top_tokens = [tokens[i] for i in top_indices_list]
-        top_values = [float(shap_values[i]) for i in top_indices_list]
-    else:
-        top_tokens = []
-        top_values = []
+        # Extract tokens and values for valid indices
+        for idx in top_indices:
+            # Convert numpy scalar to Python int safely
+            idx_int = int(idx)
+            if idx_int < len(tokens):
+                top_tokens.append(tokens[idx_int])
+                top_values.append(float(shap_values[idx_int]))
     
     df = pd.DataFrame({
         "token": top_tokens,
