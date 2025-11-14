@@ -809,6 +809,23 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         tokens = _tokenize(user_text, bool(preproc.get("lowercase", True)))
         logger.debug("User text tokenized into %d tokens", len(tokens))
 
+        # --- NEW LOGGER 1: START ---
+        # Log the raw, unadulterated SHAP values
+        logger.info("--- [LOGGER 1] Inspecting RAW values from SHAP computation ---")
+        try:
+            num_tokens = min(len(tokens), len(shap_vals_1d))
+            top_abs_indices = np.argsort(np.abs(shap_vals_1d[:num_tokens]))[::-1][:10]
+            
+            for i, idx in enumerate(top_abs_indices):
+                token = tokens[idx]
+                raw_value = shap_vals_1d[idx]
+                # Log using %f to avoid scientific notation
+                logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} (as float: {raw_value:%f})")
+        except Exception as e:
+            logger.warning(f"Logger 1 failed: {e}")
+        logger.info("--------------------------------------------------------------")
+        # --- NEW LOGGER 1: END ---
+
         # Get the expected value (base value) for the specific target class
         base_value = explainer.expected_value
         if isinstance(base_value, (list, np.ndarray)) and len(base_value) > target_idx:
@@ -1134,19 +1151,46 @@ if go:
                         
                         if shap_result is not None:
                             # Unpack the new base_value
-                            shap_vals, tokens, base_value = shap_result
+                            shap_vals_1d, tokens, base_value = shap_result
                             logger.info("SHAP computation successful: %d tokens, base_value=%.4f", len(tokens), base_value)
                             
-                            # Align tokens with shap_vals (which is padded to max_length)
-                            num_tokens = min(len(tokens), len(shap_vals))
+                            # --- THIS IS THE FIX ---
                             
-                            # Create a SHAP Explanation object for the waterfall plot
+                            # 1. Align tokens and values, handling padding
+                            num_tokens = min(len(tokens), len(shap_vals_1d))
+                            aligned_vals = shap_vals_1d[:num_tokens]
+                            aligned_tokens = tokens[:num_tokens]
+
+
+                            # 2. Create an array of pre-formatted strings
+                            # We use "+.3f" to get "+0.003" or "-0.002"
+                            display_vals = [f"{v:+.3f}" for v in aligned_vals]
+                            # --- NEW LOGGER 2: START ---
+                            # Log the raw values vs. our formatted strings
+                            logger.info("--- [LOGGER 2] Inspecting values vs. formatted strings ---")
+                            try:
+                                top_abs_indices = np.argsort(np.abs(aligned_vals))[::-1][:10]
+                                for i, idx in enumerate(top_abs_indices):
+                                    raw_value = aligned_vals[idx]
+                                    formatted_str = display_vals[idx]
+                                    token = aligned_tokens[idx]
+                                    logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} | Formatted: '{formatted_str}'")
+                            except Exception as e:
+                                logger.warning(f"Logger 2 failed: {e}")
+                            logger.info("----------------------------------------------------------")
+                            # --- NEW LOGGER 2: END ---
+                            
+                            # 3. Create the Explanation object
+                            # .values = raw numbers (for bar length calculation)
+                            # .display_data = our strings (for bar labels)
                             shap_explanation = shap.Explanation(
-                                values=shap_vals[:num_tokens],
+                                values=aligned_vals,
                                 base_values=base_value,
-                                data=tokens[:num_tokens], # The feature values are the tokens
-                                feature_names=tokens[:num_tokens] # The feature names are also the tokens
+                                data=aligned_tokens, 
+                                feature_names=aligned_tokens,
+                                display_data=display_vals # <-- This forces SHAP to use our strings
                             )
+                            # --- END OF FIX ---
 
                             # Create a new matplotlib figure.
                             # We need to do this so shap.waterfall_plot renders to it.
@@ -1156,32 +1200,6 @@ if go:
                             # max_display=10 shows top 10 features + "other"
                             # show=False prevents shap from trying to call plt.show()
                             shap.waterfall_plot(shap_explanation, max_display=10, show=False)
-
-                            logger.info("--- Inspecting original plot labels ---") # Added header
-                            for text_obj in ax.texts:
-                                try:
-                                    # Get the text, clean unicode minus (replace '−' with '-')
-                                    original_text = text_obj.get_text() # Store original text
-                                    text = original_text
-                                    if text and ord(text[0]) == 8722: 
-                                        text = "-" + text[1:]
-                                    
-                                    value = float(text)
-
-                                    # --- THIS IS THE NEW LINE ---
-                                    # Log the original string and the parsed float
-                                    logger.info(f"Original label: '{original_text}' | Parsed float: {value}")
-                                    
-                                    # Re-format to +/- 0.000 (3 decimal places) and update
-                                    text_obj.set_text(f"{value:+.3f}")
-                                except ValueError:
-                                    # Log text that we skip (e.g., feature names)
-                                    logger.debug(f"Skipping non-numeric label: '{original_text}'")
-                                    pass
-                                except ValueError:
-                                    # Ignore text that can't be converted to a float
-                                    pass
-                            logger.info("---------------------------------------") # Added footer
                             # Use st.pyplot to render the matplotlib figure in Streamlit
                             # bbox_inches='tight' cleans up whitespace
                             st.pyplot(fig, bbox_inches='tight')
