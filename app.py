@@ -55,11 +55,6 @@ logger = logging.getLogger("ee6405_app")
 # ----------------------------
 # Helpers
 # ----------------------------
-@st.cache_data(show_spinner=False)
-def read_csv_from_upload(file) -> pd.DataFrame:
-    return pd.read_csv(file)
-
-
 def draw_confusion_matrix_heatmap(conf_mat: np.ndarray, labels: List[Any], width: int = 500, dpi: int = 200, title: str = "Confusion Matrix") -> None:
     # Render to image and control container size via st.image width
     fig, ax = plt.subplots(figsize=(4, 3))
@@ -272,200 +267,8 @@ def load_per_model_confusions(domain: str) -> Dict[str, Tuple[np.ndarray, List[s
     return out
 
 @st.cache_data(show_spinner=False)
-def compute_genre_counts(domain: str) -> Optional[Counter]:
-    """
-    Build genre frequency counts primarily from artifacts samples, with fallbacks:
-      1) samples_{model}.csv (true or true_labels)
-      2) samples.csv
-      3) confusion_matrix.csv (row sums interpreted as true label counts)
-    Returns a Counter or None if nothing available.
-    """
-    root = _project_root()
-    domain_key = domain.strip().lower()
-    bundle_dir = os.path.join(root, "artifacts", domain_key)
+def compute_cat_counts(domain: str) -> Optional[Counter]: # CATegory counts.
 
-    def _split_multi(s: str) -> List[str]:
-        parts = re.split(r"[|,/;]+", str(s))
-        return [p.strip() for p in parts if p and p.strip()]
-
-    # 1) Per-model samples
-    for mk in ("rnn", "lstm", "gru"):
-        path = os.path.join(bundle_dir, f"samples_{mk}.csv")
-        if os.path.exists(path):
-            try:
-                df = pd.read_csv(path)
-                counts: Counter = Counter()
-                if "true" in df.columns:
-                    for v in df["true"].dropna().astype(str):
-                        counts[v.strip()] += 1
-                elif "true_labels" in df.columns:
-                    for v in df["true_labels"].dropna().astype(str):
-                        for lbl in _split_multi(v):
-                            counts[lbl] += 1
-                if counts:
-                    return counts
-            except Exception:
-                pass
-
-    # 2) Combined samples
-    path = os.path.join(bundle_dir, "samples.csv")
-    if os.path.exists(path):
-        try:
-            df = pd.read_csv(path)
-            counts = Counter()
-            if "true" in df.columns:
-                for v in df["true"].dropna().astype(str):
-                    counts[v.strip()] += 1
-            elif "true_labels" in df.columns:
-                for v in df["true_labels"].dropna().astype(str):
-                    for lbl in _split_multi(v):
-                        counts[lbl] += 1
-            if counts:
-                return counts
-        except Exception:
-            pass
-
-    # 3) Confusion matrix row sums
-    cm_path = os.path.join(bundle_dir, "confusion_matrix.csv")
-    if os.path.exists(cm_path):
-        try:
-            df = pd.read_csv(cm_path, index_col=0)
-            labels = list(df.columns)
-            row_sums = df.sum(axis=1).tolist()
-            counts = Counter({str(lbl): int(val) for lbl, val in zip(labels, row_sums)})
-            if counts:
-                return counts
-        except Exception:
-            pass
-
-    return None
-
-@st.cache_data(show_spinner=False)
-def compute_dataset_genre_counts(domain: str) -> Optional[Counter]:
-    """
-    Compute genre/category frequency directly from the raw datasets in the repo.
-      - Books: Books/BooksDatasetClean.csv, column 'Category'
-      - Movies: Movies/wiki_movie_plots_deduped.csv, columns like 'Genre'/'Genres'
-      - Games: Games/steam.csv or Games/steam_description_data.csv, columns like 'genre'/'genres'
-    """
-    root = _project_root()
-    dkey = domain.strip().lower()
-
-    def _split_multi(val: str) -> List[str]:
-        parts = re.split(r"[|,/;]+", str(val))
-        return [p.strip() for p in parts if p and p.strip()]
-
-    try:
-        # Helper: normalize token into one of the known labels (when available)
-        def _norm_token_to_label(tok: str, dkey: str, labels: Optional[List[str]]) -> Optional[str]:
-            t = str(tok).strip()
-            tl = t.lower()
-            # Common trims
-            tl = tl.replace("&", "and").replace("_", " ").replace("-", " ").strip()
-            # Domain-specific synonyms
-            if dkey == "games":
-                if tl == "massively multiplayer":
-                    t = "MMO"
-                elif tl in ("role playing", "roleplaying", "rpg"):
-                    t = "RPG"
-                else:
-                    t = t
-            elif dkey == "movies":
-                if tl in ("science fiction", "sci fi", "sci–fi", "scifi"):
-                    t = "Sci-Fi"
-                else:
-                    t = t.title()
-            elif dkey == "books":
-                t = t.lower()
-            # If we have a labels list, match against it (case-insensitive)
-            if labels:
-                for L in labels:
-                    if str(L).strip().lower() == str(t).strip().lower():
-                        return L
-                # For Books, map unknowns to 'other' if present
-                if dkey == "books" and any(str(L).strip().lower() == "other" for L in labels):
-                    return next(L for L in labels if str(L).strip().lower() == "other")
-                return None
-            return t
-
-        if dkey == "books":
-            csv_path = os.path.join(root, "Books", "BooksDatasetClean.csv")
-            if not os.path.exists(csv_path):
-                return None
-            df = pd.read_csv(csv_path)
-            if "Category" not in df.columns:
-                return None
-            # Try to align with model labels if present
-            labels_txt = os.path.join(root, "artifacts", dkey, "labels.txt")
-            labels: Optional[List[str]] = None
-            if os.path.exists(labels_txt):
-                with open(labels_txt, "r", encoding="utf-8") as f:
-                    labels = [line.strip() for line in f if line.strip()]
-            cnt: Counter = Counter()
-            for v in df["Category"].dropna().astype(str):
-                for g in _split_multi(v):
-                    mapped = _norm_token_to_label(g, dkey, labels)
-                    if mapped and str(mapped).strip().lower() != "unknown":
-                        cnt[mapped] += 1
-            return cnt if cnt else None
-
-        if dkey == "movies":
-            csv_path = os.path.join(root, "Movies", "wiki_movie_plots_deduped.csv")
-            if not os.path.exists(csv_path):
-                return None
-            df = pd.read_csv(csv_path)
-            labels_txt = os.path.join(root, "artifacts", dkey, "labels.txt")
-            labels: Optional[List[str]] = None
-            if os.path.exists(labels_txt):
-                with open(labels_txt, "r", encoding="utf-8") as f:
-                    labels = [line.strip() for line in f if line.strip()]
-            for col in ["Genre", "Genres", "genre", "genres"]:
-                if col in df.columns:
-                    cnt = Counter()
-                    for v in df[col].dropna().astype(str):
-                        for g in _split_multi(v):
-                            mapped = _norm_token_to_label(g, dkey, labels)
-                            if mapped and str(mapped).strip().lower() != "unknown":
-                                cnt[mapped] += 1
-                    return cnt if cnt else None
-            return None
-
-        if dkey == "games":
-            paths = [
-                os.path.join(root, "Games", "steam.csv"),
-                os.path.join(root, "Games", "steam_description_data.csv"),
-            ]
-            cnt = Counter()
-            labels_txt = os.path.join(root, "artifacts", dkey, "labels.txt")
-            labels: Optional[List[str]] = None
-            if os.path.exists(labels_txt):
-                with open(labels_txt, "r", encoding="utf-8") as f:
-                    labels = [line.strip() for line in f if line.strip()]
-            for p in paths:
-                if os.path.exists(p):
-                    try:
-                        df = pd.read_csv(p)
-                        for col in ["genre", "genres", "Genre", "Genres"]:
-                            if col in df.columns:
-                                for v in df[col].dropna().astype(str):
-                                    for g in _split_multi(v):
-                                        mapped = _norm_token_to_label(g, dkey, labels)
-                                        if mapped and str(mapped).strip().lower() != "unknown":
-                                            cnt[mapped] += 1
-                    except Exception:
-                        continue
-            return cnt if cnt else None
-
-        return None
-    except Exception:
-        return None
-
-@st.cache_data(show_spinner=False)
-def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
-    """
-    Mimic each notebook's early preprocessing up to the genre/category frequency plot.
-    This intentionally prioritizes faithfulness over optimization.
-    """
     root = _project_root()
     dkey = domain.strip().lower()
 
@@ -489,7 +292,6 @@ def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
 
     try:
         if dkey == "books":
-            # EXACT mimic of early notebook steps
             csv_path = os.path.join(root, "Books", "BooksDatasetClean.csv")
             if not os.path.exists(csv_path):
                 return None
@@ -498,13 +300,11 @@ def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
                 return None
             df = df.dropna(subset=['Description', 'Category'])
 
-            # split_category from notebook
             def split_category(text: str) -> List[str]:
                 if not isinstance(text, str):
                     return []
                 parts = re.split(r'[,/|\s]+', text.lower())
                 parts = [p.strip() for p in parts if p.strip()]
-                # dict.fromkeys preserves order and removes dups
                 return list(dict.fromkeys(parts))
 
             category_list: List[List[str]] = []
@@ -521,7 +321,6 @@ def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
             return _Ctr(filtered) if filtered else None
 
         elif dkey == "movies":
-            # EXACT mimic: use 'Genre' column and drop 'unknown' rows first
             csv_path = os.path.join(root, "Movies", "wiki_movie_plots_deduped.csv")
             if not os.path.exists(csv_path):
                 return None
@@ -544,7 +343,7 @@ def compute_notebook_style_counts(domain: str) -> Optional[Counter]:
             return Counter(all_genres) if all_genres else None
 
         elif dkey == "games":
-            # EXACT mimic: merge description and genres CSVs, then split genres by ';' and lowercase
+            # merge description and genres CSVs, then split genres by ';' and lowercase
             desc_path = os.path.join(root, "Games", "steam_description_data.csv")
             data_path = os.path.join(root, "Games", "steam.csv")
             if not (os.path.exists(desc_path) and os.path.exists(data_path)):
@@ -677,48 +476,7 @@ def _make_predict_fn(domain_key: str):
 
     return _predict, labels, preproc
 
-
-# ----------------------------
-# SHAP Explainability helpers
-# ----------------------------
-@st.cache_resource(show_spinner=False)
-def _load_shap_masker(domain_key: str):
-    """
-    Load or create a SHAP masker for text-based explanations.
-    Uses a masking function that replaces tokens with a background value.
-    """
-    if shap is None:
-        raise ImportError("SHAP is not installed. Please add 'shap' to your environment.")
-    
-    # Get predict function and preprocessing info
-    predict_fn, labels, preproc = _make_predict_fn(domain_key)
-    
-    # Create a simple text masker using word-level masking
-    def _predict_wrapper(token_arrays: np.ndarray) -> np.ndarray:
-        """
-        Wrapper that converts token-level masked arrays back to text for LIME-style explanation.
-        token_arrays: shape [N, num_tokens] with 1s for present tokens, 0s for masked tokens
-        """
-        # For SHAP, we need to handle the masking differently
-        # We'll use a simpler approach: convert masked tokens back to text
-        word_index = preproc.get("word_index") or {}
-        reverse_index = {v: k for k, v in word_index.items()}
-        
-        max_length = int(preproc.get("max_length", 256))
-        lowercase = bool(preproc.get("lowercase", True))
-        
-        predictions = []
-        for token_array in token_arrays:
-            # token_array is [num_tokens] of 0s and 1s
-            # Reconstruct by keeping only "present" tokens
-            # For simplicity, we'll apply masking to the original text
-            # This is a simplified version; a full implementation would track original tokens
-            predictions.append(np.ones(len(labels)))  # Placeholder
-        
-        return np.array(predictions)
-    
-    return _predict_wrapper, labels
-
+# SHAP
 
 def _make_shap_explainer(domain_key: str, background_data: Optional[np.ndarray] = None):
     """
@@ -839,57 +597,6 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         return None
 
 
-def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_features: int = 10) -> pd.DataFrame:
-    """
-    Extract top SHAP features (tokens with highest absolute SHAP values).
-    
-    Args:
-        shap_values: SHAP values array
-        tokens: List of tokens
-        num_features: Number of top features to extract
-    
-    Returns:
-        DataFrame with columns ["token", "shap_value"]
-    """
-    # Take absolute values for importance ranking
-    abs_shap = np.abs(shap_values)
-    
-    # Get indices of top features
-    top_tokens = []
-    top_values = []
-    
-    if len(tokens) > 0:
-            # SHAP values might be longer than tokens (padding), so align them
-            num_tokens = min(len(tokens), len(shap_values))
-            
-            # Ensure shap_values is 1D before argsort
-            # This guards against shap_values being [1, N]
-            if shap_values.ndim > 1:
-                shap_values = shap_values.ravel()
-                
-            top_indices = np.argsort(np.abs(shap_values[:num_tokens]))[-num_features:][::-1]
-            
-            # Extract tokens and values for valid indices
-            for idx in top_indices:
-                # idx is a numpy integer (e.g., np.int64).
-                # We can cast it directly to a standard Python int.
-                idx_int = int(idx)
-                
-                if idx_int < len(tokens):
-                    top_tokens.append(tokens[idx_int])
-                    
-                    # shap_values[idx_int] is a numpy float (e.g., np.float64).
-                    # We can cast it directly to a standard Python float.
-                    shap_val = float(shap_values[idx_int])
-                    top_values.append(shap_val)
-    df = pd.DataFrame({
-        "token": top_tokens,
-        "shap_value": top_values
-    })
-    
-    logger.debug("Extracted %d top SHAP features", len(df))
-    return df
-
 st.markdown("### Experiment results")
 # below is deprecated, use per model instead!
 
@@ -952,14 +659,14 @@ if per_model_conf:
 
 # overview of top 10 (just dump the notebook logic here lmao)
 st.markdown("### Top 10 Genre/Category Frequency")
-nb_counts = compute_notebook_style_counts(domain)
-if nb_counts is not None and len(nb_counts) > 0:
+cat_counts = compute_cat_counts(domain)
+if cat_counts is not None and len(cat_counts) > 0:
     dkey = domain.strip().lower()
-    counts_for_plot = nb_counts
+    counts_for_plot = cat_counts
     if dkey == "games":
         # Apply EXCLUDE_GENRES before selecting top 10
         EXCLUDE_GENRES = ["early access", "free to play", "indie", "casual"]
-        counts_for_plot = Counter({g: c for g, c in nb_counts.items() if g not in EXCLUDE_GENRES})
+        counts_for_plot = Counter({g: c for g, c in cat_counts.items() if g not in EXCLUDE_GENRES})
     elif dkey == "books":
         try:
             root = _project_root()
