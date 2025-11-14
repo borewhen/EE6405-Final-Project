@@ -34,7 +34,7 @@ import logging
 # App Configuration
 # ----------------------------
 st.set_page_config(
-    page_title="EE6405 Model Evaluator",
+    page_title="EE6405 \"Genre Classifier\"",
     page_icon="📊",
     layout="wide",
 )
@@ -94,7 +94,7 @@ def download_bytes_from_df(df: pd.DataFrame, filename: str, label: str) -> None:
 # ----------------------------
 # Main Content
 # ----------------------------
-st.title("EE6405 Model Evaluator")
+st.title("EE6405 \"Genre Classifier\"")
 st.text("AY2025/26 Semester 1, Table A8")
 st.text("Dave Marteen Gunawan, Jin Zixuan, John Ang Yi Heng, Shen Bowen, Wu Huaye")
 domain = st.selectbox("Select domain", ["Books", "Movies", "Games"], index=0)
@@ -604,7 +604,10 @@ def _load_bundle_for_explain(domain_key: str):
 
 
 def _tokenize(text: str, lowercase: bool) -> List[str]:
-    s = text or ""
+    # Handle numpy arrays or other non-string types (from SHAP)
+    if isinstance(text, np.ndarray):
+        text = str(text)
+    s = str(text) if text is not None else ""
     if lowercase:
         s = s.lower()
     return re.findall(r"[a-z0-9']+", s)
@@ -618,7 +621,11 @@ def _encode_texts(texts: List[str], preproc: Dict[str, Any]) -> np.ndarray:
 
     ids_batch: List[List[int]] = []
     for t in texts:
-        toks = _tokenize(t or "", lowercase)
+        # Handle numpy arrays or other non-string types (from SHAP)
+        if isinstance(t, np.ndarray):
+            t = str(t)
+        t_str = str(t) if t is not None else ""
+        toks = _tokenize(t_str, lowercase)
         ids = [int(word_index.get(tok, oov_token_id)) for tok in toks]
         if len(ids) < max_length:
             ids = ids + [0] * (max_length - len(ids))
@@ -632,19 +639,256 @@ def _make_predict_fn(domain_key: str):
     # Returns a function: List[str] -> np.ndarray [N, C] of probabilities
     model, labels, preproc = _load_bundle_for_explain(domain_key)
 
-    def _predict(texts: List[str]) -> np.ndarray:
+    def _predict(texts):
+        """
+        Wrapper that handles both string lists and numpy arrays (from SHAP).
+        Processes large batches in chunks to avoid memory allocation errors.
+        texts: List[str] or np.ndarray
+        """
         import torch  # type: ignore
-        input_ids = _encode_texts(texts, preproc)
+        
+        # Handle numpy array input from SHAP
+        if isinstance(texts, np.ndarray):
+            # Convert numpy array to list of strings
+            texts = [str(t) for t in texts]
+        
+        # Ensure texts is a list
+        if not isinstance(texts, list):
+            texts = [texts]
+        
+        # Process in small batches to prevent memory allocation errors
+        # This is important for SHAP's KernelExplainer which sends large batches
+        batch_size = 8  # Small batch size for TorchScript model
+        all_probs = []
+        
         with torch.no_grad():
-            tens = torch.as_tensor(input_ids, device="cpu")
-            logits = model(tens)
-            if isinstance(logits, (list, tuple)):
-                logits = logits[0]
-            logits = logits.float()
-            probs = torch.softmax(logits, dim=-1).cpu().numpy()
-        return probs.astype(float)
+            for i in range(0, len(texts), batch_size):
+                batch = texts[i:i + batch_size]
+                input_ids = _encode_texts(batch, preproc)
+                tens = torch.as_tensor(input_ids, device="cpu")
+                logits = model(tens)
+                if isinstance(logits, (list, tuple)):
+                    logits = logits[0]
+                logits = logits.float()
+                probs = torch.softmax(logits, dim=-1).cpu().numpy()
+                all_probs.append(probs)
+        
+        return np.vstack(all_probs).astype(float)
 
     return _predict, labels, preproc
+
+
+# ----------------------------
+# SHAP Explainability helpers
+# ----------------------------
+@st.cache_resource(show_spinner=False)
+def _load_shap_masker(domain_key: str):
+    """
+    Load or create a SHAP masker for text-based explanations.
+    Uses a masking function that replaces tokens with a background value.
+    """
+    if shap is None:
+        raise ImportError("SHAP is not installed. Please add 'shap' to your environment.")
+    
+    # Get predict function and preprocessing info
+    predict_fn, labels, preproc = _make_predict_fn(domain_key)
+    
+    # Create a simple text masker using word-level masking
+    def _predict_wrapper(token_arrays: np.ndarray) -> np.ndarray:
+        """
+        Wrapper that converts token-level masked arrays back to text for LIME-style explanation.
+        token_arrays: shape [N, num_tokens] with 1s for present tokens, 0s for masked tokens
+        """
+        # For SHAP, we need to handle the masking differently
+        # We'll use a simpler approach: convert masked tokens back to text
+        word_index = preproc.get("word_index") or {}
+        reverse_index = {v: k for k, v in word_index.items()}
+        
+        max_length = int(preproc.get("max_length", 256))
+        lowercase = bool(preproc.get("lowercase", True))
+        
+        predictions = []
+        for token_array in token_arrays:
+            # token_array is [num_tokens] of 0s and 1s
+            # Reconstruct by keeping only "present" tokens
+            # For simplicity, we'll apply masking to the original text
+            # This is a simplified version; a full implementation would track original tokens
+            predictions.append(np.ones(len(labels)))  # Placeholder
+        
+        return np.array(predictions)
+    
+    return _predict_wrapper, labels
+
+
+def _make_shap_explainer(domain_key: str, background_data: Optional[np.ndarray] = None):
+    """
+    Create a SHAP KernelExplainer for text explanations.
+    
+    Args:
+        domain_key: Domain identifier
+        background_data: Optional background dataset for SHAP values computation
+                        If None, uses a small default background
+    
+    Returns:
+        Tuple of (explainer, predict_fn, labels, preproc)
+    """
+    if shap is None:
+        raise ImportError("SHAP is not installed.")
+    
+    logger.debug("Initializing SHAP explainer for domain=%s", domain_key)
+    
+    # Get the prediction function
+    predict_fn, labels, preproc = _make_predict_fn(domain_key)
+    
+    # Create background data if not provided
+    # For SHAP with text, we typically use a small background sample
+    if background_data is None:
+        # Use a very small set of neutral background texts to save memory
+        # SHAP KernelExplainer doesn't need a large background for text
+        background_texts = [
+            "a",
+            "the",
+            "is there",
+            "this is",
+        ]
+        background_data = _encode_texts(background_texts, preproc)
+        logger.debug("Created default background data with %d samples", len(background_texts))
+    
+    try:
+        # Create KernelExplainer
+        explainer = shap.KernelExplainer(predict_fn, background_data)
+        logger.debug("SHAP KernelExplainer created successfully")
+        return explainer, predict_fn, labels, preproc
+    except Exception as e:
+        logger.exception("Failed to create SHAP explainer: %s", e)
+        raise
+
+
+@st.cache_data(show_spinner=False)
+def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: int) -> Optional[Tuple[np.ndarray, List[str], float]]:
+    """
+    Compute SHAP values for a text input.
+    
+    Args:
+        domain_key: Domain identifier
+        user_text: Input text to explain
+        target_idx: Target class index to explain
+    
+    Returns:
+        Tuple of (shap_values_1d, tokens, base_value) or None if failed
+    """
+    if shap is None:
+        return None
+    
+    try:
+        logger.debug("Computing SHAP values for user_text (len=%d)", len(user_text))
+        
+        # Get explainer and prediction function
+        explainer, predict_fn, labels, preproc = _make_shap_explainer(domain_key)
+        
+        # Encode user text
+        user_encoded = _encode_texts([user_text], preproc)  # Shape: [1, max_length]
+        
+        # Compute SHAP values with limited samples
+        shap_values_obj = explainer.shap_values(user_encoded, nsamples=50)
+        
+        shap_vals_1d: np.ndarray
+        
+        if isinstance(shap_values_obj, list):
+            # Case 1: List of [samples, features] arrays (one per class)
+            # shap_values_obj is a list of N_CLASSES arrays, each [1, max_length]
+            shap_vals_for_class = shap_values_obj[target_idx] # Get array for target class, shape [1, max_length]
+            shap_vals_1d = shap_vals_for_class[0] # Get first (only) sample, shape [max_length]
+        else:
+            # Case 2: Single [samples, features, classes] array
+            # shap_values_obj is shape [1, max_length, N_CLASSES]
+            shap_vals_1d = shap_values_obj[0, :, target_idx] # Get sample 0, all features, target class
+        
+        logger.debug("SHAP values computed and sliced to 1D: shape=%s", shap_vals_1d.shape)
+        
+        # Tokenize to get token count for alignment
+        tokens = _tokenize(user_text, bool(preproc.get("lowercase", True)))
+        logger.debug("User text tokenized into %d tokens", len(tokens))
+
+        # --- NEW LOGGER 1: START ---
+        # Log the raw, unadulterated SHAP values
+        logger.info("--- [LOGGER 1] Inspecting RAW values from SHAP computation ---")
+        try:
+            num_tokens = min(len(tokens), len(shap_vals_1d))
+            top_abs_indices = np.argsort(np.abs(shap_vals_1d[:num_tokens]))[::-1][:10]
+            
+            for i, idx in enumerate(top_abs_indices):
+                token = tokens[idx]
+                raw_value = shap_vals_1d[idx]
+                # Log using %f to avoid scientific notation
+                logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} (as float: {raw_value:f})")
+        except Exception as e:
+            logger.warning(f"Logger 1 failed: {e}")
+        logger.info("--------------------------------------------------------------")
+        # --- NEW LOGGER 1: END ---
+
+        # Get the expected value (base value) for the specific target class
+        base_value = explainer.expected_value
+        if isinstance(base_value, (list, np.ndarray)) and len(base_value) > target_idx:
+             base_value = base_value[target_idx]
+        
+        return shap_vals_1d, tokens, float(base_value)
+    
+    except Exception as e:
+        logger.exception("Failed to compute SHAP values: %s", e)
+        return None
+
+
+def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_features: int = 10) -> pd.DataFrame:
+    """
+    Extract top SHAP features (tokens with highest absolute SHAP values).
+    
+    Args:
+        shap_values: SHAP values array
+        tokens: List of tokens
+        num_features: Number of top features to extract
+    
+    Returns:
+        DataFrame with columns ["token", "shap_value"]
+    """
+    # Take absolute values for importance ranking
+    abs_shap = np.abs(shap_values)
+    
+    # Get indices of top features
+    top_tokens = []
+    top_values = []
+    
+    if len(tokens) > 0:
+            # SHAP values might be longer than tokens (padding), so align them
+            num_tokens = min(len(tokens), len(shap_values))
+            
+            # Ensure shap_values is 1D before argsort
+            # This guards against shap_values being [1, N]
+            if shap_values.ndim > 1:
+                shap_values = shap_values.ravel()
+                
+            top_indices = np.argsort(np.abs(shap_values[:num_tokens]))[-num_features:][::-1]
+            
+            # Extract tokens and values for valid indices
+            for idx in top_indices:
+                # idx is a numpy integer (e.g., np.int64).
+                # We can cast it directly to a standard Python int.
+                idx_int = int(idx)
+                
+                if idx_int < len(tokens):
+                    top_tokens.append(tokens[idx_int])
+                    
+                    # shap_values[idx_int] is a numpy float (e.g., np.float64).
+                    # We can cast it directly to a standard Python float.
+                    shap_val = float(shap_values[idx_int])
+                    top_values.append(shap_val)
+    df = pd.DataFrame({
+        "token": top_tokens,
+        "shap_value": top_values
+    })
+    
+    logger.debug("Extracted %d top SHAP features", len(df))
+    return df
 
 st.markdown("### Experiment results")
 _metrics, _conf_mat, _lbls = load_artifact_results(domain)
@@ -657,7 +901,7 @@ if _conf_mat is not None and _lbls is not None and len(_conf_mat) > 0:
         conf_mat_df = None
     if metrics_df is not None:
         st.markdown("### Metrics")
-        st.dataframe(metrics_df, use_container_width=True)
+        st.dataframe(metrics_df, width=700)
 
 # Per-model comparison (shown even if metrics_df is missing)
 model_metrics = load_per_model_metrics(domain)
@@ -685,7 +929,7 @@ if model_metrics:
     compare_df = pd.DataFrame({"metric": all_metric_names})
     for mk, md in model_metrics.items():
         compare_df[mk.upper()] = [md.get(name, np.nan) for name in all_metric_names]
-    st.dataframe(compare_df, use_container_width=True)
+    st.dataframe(compare_df, width='stretch')
 
 # Per-model confusion matrices side-by-side
 per_model_conf = load_per_model_confusions(domain)
@@ -755,13 +999,14 @@ if nb_counts is not None and len(nb_counts) > 0:
     genres, freq = zip(*top)
     fig, ax = plt.subplots(figsize=(6, 3.5))
     ax.bar(genres, freq)
+    ax.set_xticks(range(len(genres)))
     ax.set_xticklabels(genres, rotation=45, ha="right", fontsize=9)
     ax.set_title("Top 10 Genre/Category Frequency")
     fig.tight_layout()
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
     buf.seek(0)
-    st.image(buf, width=600)
+    st.image(buf, width=700)
     plt.close(fig)
 else:
     st.info("No categories available for this domain using notebook-style preprocessing.")
@@ -778,7 +1023,7 @@ for mk in model_keys:
         display_cols = [x for x in ["text", "true", "pred", "prob_pred", "correct"] if x in sdf.columns]
         if not display_cols:
             display_cols = list(sdf.columns)[:6]
-        st.dataframe(sdf[display_cols].head(100), use_container_width=True, height=260)
+        st.dataframe(sdf[display_cols].head(100), width='stretch', height=260)
         download_bytes_from_df(sdf, f"{domain.lower()}_{mk.lower()}_samples.csv", f"Download {mk} samples CSV")
     else:
         st.markdown(f"#### {mk} samples")
@@ -789,7 +1034,7 @@ if not found_any:
         display_cols = [c for c in ["text", "true", "pred", "prob_pred", "correct"] if c in samples_df.columns]
         if not display_cols:
             display_cols = list(samples_df.columns)[:6]
-        st.dataframe(samples_df[display_cols].head(200), use_container_width=True, height=320)
+        st.dataframe(samples_df[display_cols].head(200), width='stretch', height=320)
         download_bytes_from_df(samples_df, f"{domain.lower()}_samples.csv", "Download samples CSV")
     else:
         st.info("No saved samples found yet. Once notebooks export samples.csv or samples_{model}.csv, they will appear here.")
@@ -817,7 +1062,9 @@ with pred_col_left:
     )
 
 with pred_col_right:
+    st.markdown("**Explainability Methods**")
     lime_enabled = st.checkbox("Run LIME explanation", value=True)
+    shap_enabled = st.checkbox("Run SHAP explanation", value=False)
     LIME_FIXED_SAMPLES = 500
 
 go = st.button("Predict Genre", type="primary")
@@ -835,15 +1082,8 @@ if go:
             prob_df = pd.DataFrame(
                 {"label": model_labels, "probability": probabilities.astype(float)}
             ).sort_values("probability", ascending=False, ignore_index=True)
-            st.dataframe(prob_df, use_container_width=True, height=300)
-            st.bar_chart(prob_df.set_index("label"))
-            csv_bytes = prob_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download probabilities CSV",
-                data=csv_bytes,
-                file_name=f"{domain.lower()}_prediction_probs.csv",
-                mime="text/csv",
-            )
+            st.dataframe(prob_df, width=700, height=300)
+            st.bar_chart(prob_df.set_index("label"), width=700)
 
             # Auto-run LIME on predicted class
             if lime_enabled:
@@ -872,9 +1112,9 @@ if go:
                         weights = exp.as_list(label=target_idx)
                         logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
                         lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
-                        st.dataframe(lime_df, use_container_width=True, height=280)
+                        st.dataframe(lime_df, width=700, height=280)
                         try:
-                            st.bar_chart(lime_df.set_index("token/phrase"))
+                            st.bar_chart(lime_df.set_index("token/phrase"), width=700)
                         except Exception:
                             logger.debug("Bar chart rendering for LIME weights failed; continuing")
                             pass
@@ -886,9 +1126,132 @@ if go:
                     st.info(f"LIME explanation unavailable: {e}")
             else:
                 st.info("LIME explanation disabled.")
-        except FileNotFoundError as e:
-            logger.warning("Prediction artifacts missing: %s", e)
-            st.warning(str(e))
+
+            # Auto-run SHAP on predicted class
+            if shap_enabled:
+                st.markdown("### SHAP explanation (predicted class)")
+                try:
+                    logger.info("Entering SHAP explanation block")
+                    if shap is None:
+                        logger.warning("SHAP not installed or failed to import")
+                        st.info("SHAP not installed. Please add 'shap' to your environment to enable SHAP explanations.")
+                    else:
+                        logger.debug("Computing SHAP values for predicted class")
+                        predict_fn, labels, _ = _make_predict_fn(domain)
+                        target_idx = labels.index(pred_label) if pred_label in labels else int(np.argmax(probabilities))
+                        logger.info("Target index for SHAP: %d (%s)", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range")
+                        
+                        shap_result = _compute_shap_values_for_text(domain, user_text or "", target_idx)
+                        
+                        if shap_result is not None:
+                            # Unpack the new base_value
+                            shap_vals_1d, tokens, base_value = shap_result
+                            logger.info("SHAP computation successful: %d tokens, base_value=%.4f", len(tokens), base_value)
+                            
+                            # --- THIS IS THE FIX ---
+                            
+                            # 1. Align tokens and values, handling padding
+                            num_tokens = min(len(tokens), len(shap_vals_1d))
+                            aligned_vals = shap_vals_1d[:num_tokens]
+                            aligned_tokens = tokens[:num_tokens]
+
+
+                            # 2. Create an array of pre-formatted strings
+                            # We use "+.3f" to get "+0.003" or "-0.002"
+                            display_vals = [f"{v:+.3e}" for v in aligned_vals]
+                            # --- NEW LOGGER 2: START ---
+                            # Log the raw values vs. our formatted strings
+                            logger.info("--- [LOGGER 2] Inspecting values vs. formatted strings ---")
+                            try:
+                                top_abs_indices = np.argsort(np.abs(aligned_vals))[::-1][:10]
+                                for i, idx in enumerate(top_abs_indices):
+                                    raw_value = aligned_vals[idx]
+                                    formatted_str = display_vals[idx]
+                                    token = aligned_tokens[idx]
+                                    logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} | Formatted: '{formatted_str}'")
+                            except Exception as e:
+                                logger.warning(f"Logger 2 failed: {e}")
+                            logger.info("----------------------------------------------------------")
+                            # --- NEW LOGGER 2: END ---
+                            
+                            # 3. Create the Explanation object
+                            # .values = raw numbers (for bar length calculation)
+                            # .display_data = our strings (for bar labels)
+                            shap_explanation = shap.Explanation(
+                                values=aligned_vals,
+                                base_values=base_value,
+                                data=aligned_tokens, 
+                                feature_names=aligned_tokens,
+                                display_data=display_vals # <-- This forces SHAP to use our strings
+                            )
+                            # --- END OF FIX ---
+
+                            # Create a new matplotlib figure.
+                            # We need to do this so shap.waterfall_plot renders to it.
+                            fig, ax = plt.subplots()
+                            
+                            # Create the waterfall plot
+                            # max_display=10 shows top 10 features + "other"
+                            # show=False prevents shap from trying to call plt.show()
+                            shap.waterfall_plot(shap_explanation, max_display=10, show=False)
+                            # --- NEW CODE BLOCK: START ---
+                            # This block fixes the bar labels (e.g., "+0", "+0.01")
+                            try:
+                                # 1. Get the values in the exact order SHAP plotted them
+                                max_display = 10
+                                num_to_plot = min(max_display, len(aligned_vals))
+                                abs_vals = np.abs(aligned_vals)
+                                top_indices = np.argsort(abs_vals)[::-1][:num_to_plot]
+                                values_in_plot_order = aligned_vals[top_indices]
+
+                                # 2. Get *all* text objects and filter out the f(x) title
+                                all_texts = ax.texts
+                                bar_labels = []
+                                all_texts_debug = []
+                                for t in all_texts:
+                                    text = t.get_text()
+                                    all_texts_debug.append(text)
+                                    # This is the new, robust filter:
+                                    if not text.startswith('f(x)'):
+                                        bar_labels.append(t)
+                                
+                                # 3. Loop and replace the text
+                                if len(bar_labels) == num_to_plot:
+                                    logger.info("Fixing %d SHAP bar labels...", len(bar_labels))
+                                    
+                                    # SHAP plots bars top-to-bottom.
+                                    # ax.texts list order is often reversed (bottom-to-top).
+                                    values_to_set = values_in_plot_order[::-1]
+                                    
+                                    for i, text_obj in enumerate(bar_labels):
+                                        true_value = values_to_set[i]
+                                        new_label = f"{true_value:+.2g}" 
+                                        text_obj.set_text(new_label)
+                                else:
+                                    # If this log appears again, it will be very informative
+                                    logger.warning(
+                                        f"SHAP bar label fix failed: Mismatch! "
+                                        f"Found {len(bar_labels)} non-f(x) labels, "
+                                        f"but expected {num_to_plot} values."
+                                    )
+                                    logger.warning(f"All texts found on plot: {all_texts_debug}")
+
+                            except Exception as e:
+                                logger.warning(f"SHAP bar label fix failed: {e}")
+                            # --- NEW CODE BLOCK: END ---
+                            st.pyplot(fig, bbox_inches='tight', width=700)
+                            
+                            # Close the plot to free up memory
+                            plt.close(fig)
+
+                        else:
+                            st.warning("SHAP computation failed.")
+                except FileNotFoundError as e:
+                    logger.warning("Artifacts missing for SHAP: %s", e)
+                    st.info(str(e))
+                except Exception as e:
+                    logger.exception("SHAP explanation failed with an exception")
+                    st.info(f"SHAP explanation unavailable: {e}")
         except Exception as e:
-            logger.exception("Prediction with trained weights failed")
-            st.error(f"Prediction with trained weights failed: {e}")
+            logger.exception("Prediction failed")
+            st.error(f"Prediction failed: {e}")
