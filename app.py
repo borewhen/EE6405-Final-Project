@@ -980,7 +980,7 @@ if nb_counts is not None and len(nb_counts) > 0:
                         category_list_b.append(split_category_b(category_str))
                     category_list_b = [[c for c in sublist if c != "&"] for sublist in category_list_b]
 
-                    EXCLUDE_CATEGORIES_B = {"fiction", "nonfiction", "general"}
+                    EXCLUDE_CATEGORIES_B = {"general"}
                     flat_b = [g.strip() for sub in category_list_b for g in sub if g and str(g).strip()]
                     filtered_b = [g for g in flat_b if g.lower() not in EXCLUDE_CATEGORIES_B]
                     top10_b = [cat for cat, _ in Counter(filtered_b).most_common(10)]
