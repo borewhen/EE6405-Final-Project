@@ -763,7 +763,7 @@ def _make_shap_explainer(domain_key: str, background_data: Optional[np.ndarray] 
         raise
 
 
-def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: int) -> Optional[Tuple[np.ndarray, List[str]]]:
+def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: int) -> Optional[Tuple[np.ndarray, List[str], float]]:
     """
     Compute SHAP values for a text input.
     
@@ -809,8 +809,11 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         # Tokenize to get token count for alignment
         tokens = _tokenize(user_text, bool(preproc.get("lowercase", True)))
         logger.debug("User text tokenized into %d tokens", len(tokens))
+
+        # Get the expected value (base value) for the specific target class
+        base_value = explainer.expected_value[target_idx]
         
-        return shap_vals, tokens
+        return shap_vals, tokens, float(base_value)
     
     except Exception as e:
         logger.exception("Failed to compute SHAP values: %s", e)
@@ -1127,21 +1130,39 @@ if go:
                         logger.info("Target index for SHAP: %d (%s)", target_idx, labels[target_idx] if 0 <= target_idx < len(labels) else "out-of-range")
                         
                         shap_result = _compute_shap_values_for_text(domain, user_text or "", target_idx)
+                        
                         if shap_result is not None:
-                            shap_vals, tokens = shap_result
-                            logger.info("SHAP computation successful: %d tokens", len(tokens))
+                            # Unpack the new base_value
+                            shap_vals, tokens, base_value = shap_result
+                            logger.info("SHAP computation successful: %d tokens, base_value=%.4f", len(tokens), base_value)
                             
-                            shap_df = _extract_shap_features(shap_vals, tokens, num_features=10)
+                            # Align tokens with shap_vals (which is padded to max_length)
+                            num_tokens = min(len(tokens), len(shap_vals))
                             
-                            if not shap_df.empty:
-                                st.dataframe(shap_df, width='stretch', height=280)
-                                try:
-                                    st.bar_chart(shap_df.set_index("token"))
-                                except Exception:
-                                    logger.debug("Bar chart rendering for SHAP values failed; continuing")
-                                    pass
-                            else:
-                                st.warning("No SHAP features extracted.")
+                            # Create a SHAP Explanation object for the waterfall plot
+                            shap_explanation = shap.Explanation(
+                                values=shap_vals[:num_tokens],
+                                base_values=base_value,
+                                data=tokens[:num_tokens], # The feature values are the tokens
+                                feature_names=tokens[:num_tokens] # The feature names are also the tokens
+                            )
+
+                            # Create a new matplotlib figure.
+                            # We need to do this so shap.waterfall_plot renders to it.
+                            fig, ax = plt.subplots()
+                            
+                            # Create the waterfall plot
+                            # max_display=10 shows top 10 features + "other"
+                            # show=False prevents shap from trying to call plt.show()
+                            shap.waterfall_plot(shap_explanation, max_display=10, show=False)
+                            
+                            # Use st.pyplot to render the matplotlib figure in Streamlit
+                            # bbox_inches='tight' cleans up whitespace
+                            st.pyplot(fig, bbox_inches='tight')
+                            
+                            # Close the plot to free up memory
+                            plt.close(fig)
+
                         else:
                             st.warning("SHAP computation failed.")
                 except FileNotFoundError as e:
@@ -1150,13 +1171,6 @@ if go:
                 except Exception as e:
                     logger.exception("SHAP explanation failed with an exception")
                     st.info(f"SHAP explanation unavailable: {e}")
-            else:
-                if not lime_enabled:
-                    st.info("No explanation methods selected.")
-                # If LIME is enabled but SHAP is not, don't show this message
-        except FileNotFoundError as e:
-            logger.warning("Prediction artifacts missing: %s", e)
-            st.warning(str(e))
         except Exception as e:
-            logger.exception("Prediction with trained weights failed")
-            st.error(f"Prediction with trained weights failed: {e}")
+            logger.exception("Prediction failed")
+            st.error(f"Prediction failed: {e}")

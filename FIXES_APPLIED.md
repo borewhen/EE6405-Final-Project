@@ -229,7 +229,7 @@ Using 4 samples instead of 10 because:
 
 ## Files Modified
 
-- `/home/richard/EE6405NLP/project/EE6405-Final-Project/app.py`
+- `/EE6405-Final-Project/app.py`
   - Line 643-671: Updated `_predict()` with batch processing
   - Line 746-754: Reduced background data size
   - Line 787: Added nsamples=50 parameter
@@ -241,3 +241,6 @@ Using 4 samples instead of 10 because:
 **Completion Date**: November 14, 2025  
 **Status**: ✅ All fixes applied and validated  
 **Ready for Testing**: Yes
+**Note**: smh did not work
+
+
