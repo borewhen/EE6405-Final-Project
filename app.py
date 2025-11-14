@@ -1200,8 +1200,51 @@ if go:
                             # max_display=10 shows top 10 features + "other"
                             # show=False prevents shap from trying to call plt.show()
                             shap.waterfall_plot(shap_explanation, max_display=10, show=False)
-                            # Use st.pyplot to render the matplotlib figure in Streamlit
-                            # bbox_inches='tight' cleans up whitespace
+                            # --- NEW CODE BLOCK: START ---
+                            # This block fixes the bar labels (e.g., "+0", "+0.01")
+                            try:
+                                # 1. Get the values in the exact order SHAP plotted them
+                                max_display = 10
+                                num_to_plot = min(max_display, len(aligned_vals))
+                                abs_vals = np.abs(aligned_vals)
+                                top_indices = np.argsort(abs_vals)[::-1][:num_to_plot]
+                                values_in_plot_order = aligned_vals[top_indices]
+
+                                # 2. Get *all* text objects and filter out the f(x) title
+                                all_texts = ax.texts
+                                bar_labels = []
+                                all_texts_debug = []
+                                for t in all_texts:
+                                    text = t.get_text()
+                                    all_texts_debug.append(text)
+                                    # This is the new, robust filter:
+                                    if not text.startswith('f(x)'):
+                                        bar_labels.append(t)
+                                
+                                # 3. Loop and replace the text
+                                if len(bar_labels) == num_to_plot:
+                                    logger.info("Fixing %d SHAP bar labels...", len(bar_labels))
+                                    
+                                    # SHAP plots bars top-to-bottom.
+                                    # ax.texts list order is often reversed (bottom-to-top).
+                                    values_to_set = values_in_plot_order[::-1]
+                                    
+                                    for i, text_obj in enumerate(bar_labels):
+                                        true_value = values_to_set[i]
+                                        new_label = f"{true_value:+.2g}" 
+                                        text_obj.set_text(new_label)
+                                else:
+                                    # If this log appears again, it will be very informative
+                                    logger.warning(
+                                        f"SHAP bar label fix failed: Mismatch! "
+                                        f"Found {len(bar_labels)} non-f(x) labels, "
+                                        f"but expected {num_to_plot} values."
+                                    )
+                                    logger.warning(f"All texts found on plot: {all_texts_debug}")
+
+                            except Exception as e:
+                                logger.warning(f"SHAP bar label fix failed: {e}")
+                            # --- NEW CODE BLOCK: END ---
                             st.pyplot(fig, bbox_inches='tight')
                             
                             # Close the plot to free up memory
