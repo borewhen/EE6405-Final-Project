@@ -891,23 +891,25 @@ def _extract_shap_features(shap_values: np.ndarray, tokens: List[str], num_featu
     return df
 
 st.markdown("### Experiment results")
-_metrics, _conf_mat, _lbls = load_artifact_results(domain)
-if _metrics is not None:
-    metrics_df = metrics_to_dataframe(_metrics)
-if _conf_mat is not None and _lbls is not None and len(_conf_mat) > 0:
-    try:
-        conf_mat_df = confusion_matrix_to_dataframe(np.asarray(_conf_mat), _lbls)
-    except Exception:
-        conf_mat_df = None
-    if metrics_df is not None:
-        st.markdown("### Metrics")
-        st.dataframe(metrics_df, width=700)
+# below is deprecated, use per model instead!
 
-# Per-model comparison (shown even if metrics_df is missing)
+# _metrics, _conf_mat, _lbls = load_artifact_results(domain)
+# if _metrics is not None:
+#     metrics_df = metrics_to_dataframe(_metrics)
+# if _conf_mat is not None and _lbls is not None and len(_conf_mat) > 0:
+#     try:
+#         conf_mat_df = confusion_matrix_to_dataframe(np.asarray(_conf_mat), _lbls)
+#     except Exception:
+#         conf_mat_df = None
+#     if metrics_df is not None:
+#         st.markdown("### Metrics")
+#         st.dataframe(metrics_df, width=700)
+
+# Per-model comparison
 model_metrics = load_per_model_metrics(domain)
 if model_metrics:
     st.markdown("#### Per-model comparison")
-    # Determine best model by preferred metric
+    # compare for the best model
     preferred_order = ["f1_weighted", "accuracy", "f1_macro"]
     available = {k for md in model_metrics.values() for k in md.keys()}
     metric_choice = next((m for m in preferred_order if m in available), None)
@@ -941,26 +943,24 @@ if per_model_conf:
         with c:
             if mk in per_model_conf:
                 mat, lbls = per_model_conf[mk]
-                # Shorten overly long labels to avoid squeezing the matrix
+                # shorten this super long label to avoid squeezing the matrix
                 lbls_short = [("mmo" if str(l).strip().lower() == "massively multiplayer" else l) for l in lbls]
                 draw_confusion_matrix_heatmap(mat, lbls_short, width=500, dpi=200, title=mk.upper())
             else:
                 st.caption(f"{mk.upper()}")
                 st.write("—")
 
-# Dataset distribution (Top 10)
+# overview of top 10 (just dump the notebook logic here lmao)
 st.markdown("### Top 10 Genre/Category Frequency")
 nb_counts = compute_notebook_style_counts(domain)
 if nb_counts is not None and len(nb_counts) > 0:
-    # EXACT plotting behavior per notebook
     dkey = domain.strip().lower()
     counts_for_plot = nb_counts
     if dkey == "games":
-        # Apply EXCLUDE_GENRES before selecting top 10 (as in Games notebook)
+        # Apply EXCLUDE_GENRES before selecting top 10
         EXCLUDE_GENRES = ["early access", "free to play", "indie", "casual"]
         counts_for_plot = Counter({g: c for g, c in nb_counts.items() if g not in EXCLUDE_GENRES})
     elif dkey == "books":
-        # For Books: mimic Movies' mapping step within the same plot
         try:
             root = _project_root()
             csv_path = os.path.join(root, "Books", "BooksDatasetClean.csv")
@@ -986,7 +986,7 @@ if nb_counts is not None and len(nb_counts) > 0:
                     filtered_b = [g for g in flat_b if g.lower() not in EXCLUDE_CATEGORIES_B]
                     top10_b = [cat for cat, _ in Counter(filtered_b).most_common(10)]
 
-                    # Apply mapping: keep only top-10; if none remain, map to 'other'
+                    # keep only top-10; if none remain, map to 'other'
                     mapped_list: List[List[str]] = [[g for g in sub if g in top10_b] for sub in category_list_b]
                     for i in range(len(mapped_list)):
                         if len(mapped_list[i]) == 0:
@@ -994,7 +994,7 @@ if nb_counts is not None and len(nb_counts) > 0:
                     counts_for_plot = Counter([g for sub in mapped_list for g in sub])
         except Exception:
             pass
-    # Movies: take most_common(10) directly
+    # Movies
     top = counts_for_plot.most_common(10)
     genres, freq = zip(*top)
     fig, ax = plt.subplots(figsize=(6, 3.5))
@@ -1038,12 +1038,6 @@ if not found_any:
         download_bytes_from_df(samples_df, f"{domain.lower()}_samples.csv", "Download samples CSV")
     else:
         st.info("No saved samples found yet. Once notebooks export samples.csv or samples_{model}.csv, they will appear here.")
-
-
-st.caption(
-    "Accuracy, precision (weighted), recall (weighted), micro/macro/weighted F1 reported. "
-    "Confusion matrix uses the displayed label order."
-)
 
 # ----------------------------
 # Interactive Prediction (Trained Weights)
