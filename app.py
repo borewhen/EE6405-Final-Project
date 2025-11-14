@@ -34,7 +34,7 @@ import logging
 # App Configuration
 # ----------------------------
 st.set_page_config(
-    page_title="EE6405 Model Evaluator",
+    page_title="EE6405 \"Genre Classifier\"",
     page_icon="📊",
     layout="wide",
 )
@@ -94,7 +94,7 @@ def download_bytes_from_df(df: pd.DataFrame, filename: str, label: str) -> None:
 # ----------------------------
 # Main Content
 # ----------------------------
-st.title("EE6405 Model Evaluator")
+st.title("EE6405 \"Genre Classifier\"")
 st.text("AY2025/26 Semester 1, Table A8")
 st.text("Dave Marteen Gunawan, Jin Zixuan, John Ang Yi Heng, Shen Bowen, Wu Huaye")
 domain = st.selectbox("Select domain", ["Books", "Movies", "Games"], index=0)
@@ -900,7 +900,7 @@ if _conf_mat is not None and _lbls is not None and len(_conf_mat) > 0:
         conf_mat_df = None
     if metrics_df is not None:
         st.markdown("### Metrics")
-        st.dataframe(metrics_df, width='stretch')
+        st.dataframe(metrics_df, width=700)
 
 # Per-model comparison (shown even if metrics_df is missing)
 model_metrics = load_per_model_metrics(domain)
@@ -1005,7 +1005,7 @@ if nb_counts is not None and len(nb_counts) > 0:
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=200, bbox_inches="tight")
     buf.seek(0)
-    st.image(buf, width=600)
+    st.image(buf, width=700)
     plt.close(fig)
 else:
     st.info("No categories available for this domain using notebook-style preprocessing.")
@@ -1081,15 +1081,8 @@ if go:
             prob_df = pd.DataFrame(
                 {"label": model_labels, "probability": probabilities.astype(float)}
             ).sort_values("probability", ascending=False, ignore_index=True)
-            st.dataframe(prob_df, width='stretch', height=300)
-            st.bar_chart(prob_df.set_index("label"))
-            csv_bytes = prob_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download probabilities CSV",
-                data=csv_bytes,
-                file_name=f"{domain.lower()}_prediction_probs.csv",
-                mime="text/csv",
-            )
+            st.dataframe(prob_df, width=700, height=300)
+            st.bar_chart(prob_df.set_index("label"), width=700)
 
             # Auto-run LIME on predicted class
             if lime_enabled:
@@ -1118,9 +1111,9 @@ if go:
                         weights = exp.as_list(label=target_idx)
                         logger.debug("LIME weights extracted: %d features", len(weights) if isinstance(weights, list) else -1)
                         lime_df = pd.DataFrame(weights, columns=["token/phrase", "weight"])
-                        st.dataframe(lime_df, width='stretch', height=280)
+                        st.dataframe(lime_df, width=700, height=280)
                         try:
-                            st.bar_chart(lime_df.set_index("token/phrase"))
+                            st.bar_chart(lime_df.set_index("token/phrase"), width=700)
                         except Exception:
                             logger.debug("Bar chart rendering for LIME weights failed; continuing")
                             pass
@@ -1245,7 +1238,7 @@ if go:
                             except Exception as e:
                                 logger.warning(f"SHAP bar label fix failed: {e}")
                             # --- NEW CODE BLOCK: END ---
-                            st.pyplot(fig, bbox_inches='tight')
+                            st.pyplot(fig, bbox_inches='tight', width=700)
                             
                             # Close the plot to free up memory
                             plt.close(fig)
