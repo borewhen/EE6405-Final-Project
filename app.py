@@ -763,6 +763,7 @@ def _make_shap_explainer(domain_key: str, background_data: Optional[np.ndarray] 
         raise
 
 
+@st.cache_data(show_spinner=False)
 def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: int) -> Optional[Tuple[np.ndarray, List[str], float]]:
     """
     Compute SHAP values for a text input.
@@ -773,7 +774,7 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         target_idx: Target class index to explain
     
     Returns:
-        Tuple of (shap_values, tokens) or None if failed
+        Tuple of (shap_values_1d, tokens, base_value) or None if failed
     """
     if shap is None:
         return None
@@ -787,33 +788,33 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         # Encode user text
         user_encoded = _encode_texts([user_text], preproc)  # Shape: [1, max_length]
         
-        # Compute SHAP values with limited samples to prevent memory issues
-        # nsamples controls the number of Monte Carlo samples SHAP takes
-        # Lower values = faster but less accurate, higher = slower but more accurate
-        # For TorchScript models with large input dimensions, keep this low
+        # Compute SHAP values with limited samples
         shap_values_obj = explainer.shap_values(user_encoded, nsamples=50)
         
-        # shap_values_obj can be:
-        # - Single array if binary/single output
-        # - List of arrays if multi-output
+        shap_vals_1d: np.ndarray
+        
         if isinstance(shap_values_obj, list):
-            shap_vals = shap_values_obj[target_idx]
+            # Case 1: List of [samples, features] arrays (one per class)
+            # shap_values_obj is a list of N_CLASSES arrays, each [1, max_length]
+            shap_vals_for_class = shap_values_obj[target_idx] # Get array for target class, shape [1, max_length]
+            shap_vals_1d = shap_vals_for_class[0] # Get first (only) sample, shape [max_length]
         else:
-            shap_vals = shap_values_obj
+            # Case 2: Single [samples, features, classes] array
+            # shap_values_obj is shape [1, max_length, N_CLASSES]
+            shap_vals_1d = shap_values_obj[0, :, target_idx] # Get sample 0, all features, target class
         
-        # shap_vals shape: [1, max_length] - get first (only) sample
-        shap_vals = shap_vals[0]
-        
-        logger.debug("SHAP values computed: shape=%s", shap_vals.shape)
+        logger.debug("SHAP values computed and sliced to 1D: shape=%s", shap_vals_1d.shape)
         
         # Tokenize to get token count for alignment
         tokens = _tokenize(user_text, bool(preproc.get("lowercase", True)))
         logger.debug("User text tokenized into %d tokens", len(tokens))
 
         # Get the expected value (base value) for the specific target class
-        base_value = explainer.expected_value[target_idx]
+        base_value = explainer.expected_value
+        if isinstance(base_value, (list, np.ndarray)) and len(base_value) > target_idx:
+             base_value = base_value[target_idx]
         
-        return shap_vals, tokens, float(base_value)
+        return shap_vals_1d, tokens, float(base_value)
     
     except Exception as e:
         logger.exception("Failed to compute SHAP values: %s", e)
