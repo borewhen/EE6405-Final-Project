@@ -820,7 +820,7 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
                 token = tokens[idx]
                 raw_value = shap_vals_1d[idx]
                 # Log using %f to avoid scientific notation
-                logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} (as float: {raw_value:%f})")
+                logger.info(f"Top {i+1}: Token='{token:<15}' | Raw Value: {raw_value} (as float: {raw_value:f})")
         except Exception as e:
             logger.warning(f"Logger 1 failed: {e}")
         logger.info("--------------------------------------------------------------")
@@ -1164,7 +1164,7 @@ if go:
 
                             # 2. Create an array of pre-formatted strings
                             # We use "+.3f" to get "+0.003" or "-0.002"
-                            display_vals = [f"{v:+.3f}" for v in aligned_vals]
+                            display_vals = [f"{v:+.3e}" for v in aligned_vals]
                             # --- NEW LOGGER 2: START ---
                             # Log the raw values vs. our formatted strings
                             logger.info("--- [LOGGER 2] Inspecting values vs. formatted strings ---")
