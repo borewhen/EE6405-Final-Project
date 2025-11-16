@@ -86,26 +86,9 @@ def download_bytes_from_df(df: pd.DataFrame, filename: str, label: str) -> None:
     csv_bytes = df.to_csv(index=False).encode("utf-8")
     st.download_button(label=label, data=csv_bytes, file_name=filename, mime="text/csv")
 
-# ----------------------------
-# Main Content
-# ----------------------------
-st.title("EE6405 \"Genre Classifier\"")
-st.text("AY2025/26 Semester 1, Table A8")
-st.text("Dave Marteen Gunawan, Jin Zixuan, John Ang Yi Heng, Shen Bowen, Wu Huaye")
-domain = st.selectbox("Select domain", ["Books", "Movies", "Games"], index=0)
-
-debug_logging = st.checkbox("Enable debug logging", value=False, help="Writes detailed logs to your console")
-if debug_logging:
-    logger.setLevel(logging.DEBUG)
-else:
-    logger.setLevel(logging.INFO)
-logger.info("Domain selected: %s", domain)
-
-metrics_df: Optional[pd.DataFrame] = None
-conf_mat_df: Optional[pd.DataFrame] = None
 
 # ----------------------------
-# Artifact-backed Results Loader
+# Results Loader
 # ----------------------------
 def _project_root() -> str:
     return os.path.dirname(os.path.abspath(__file__))
@@ -596,6 +579,25 @@ def _compute_shap_values_for_text(domain_key: str, user_text: str, target_idx: i
         logger.exception("Failed to compute SHAP values: %s", e)
         return None
 
+# ----------------------------
+# Main Content
+# ----------------------------
+st.title("EE6405 \"Genre Classifier\"")
+st.text("AY2025/26 Semester 1, Table A8")
+st.text("Dave Marteen Gunawan, Jin Zixuan, John Ang Yi Heng, Shen Bowen, Wu Huaye")
+domain = st.selectbox("Select domain", ["Books", "Movies", "Games"], index=0)
+
+debug_logging = st.checkbox("Enable debug logging", value=False, help="Writes detailed logs to your console")
+if debug_logging:
+    logger.setLevel(logging.DEBUG)
+else:
+    logger.setLevel(logging.INFO)
+logger.info("Domain selected: %s", domain)
+
+dkey = domain.strip().lower()
+
+metrics_df: Optional[pd.DataFrame] = None
+conf_mat_df: Optional[pd.DataFrame] = None
 
 st.markdown("### Experiment results")
 # below is deprecated, use per model instead!
@@ -656,12 +658,13 @@ if per_model_conf:
             else:
                 st.caption(f"{mk.upper()}")
                 st.write("—")
+if dkey == "games":
+    st.caption("Note: We shorten 'massively multiplayer' to 'mmo' here because it is too long for a label and squeezes the matrices.")
 
 # overview of top 10 (just dump the notebook logic here lmao)
 st.markdown("### Top 10 Genre/Category Frequency")
 cat_counts = compute_cat_counts(domain)
 if cat_counts is not None and len(cat_counts) > 0:
-    dkey = domain.strip().lower()
     counts_for_plot = cat_counts
     if dkey == "games":
         # Apply EXCLUDE_GENRES before selecting top 10
@@ -698,7 +701,7 @@ if cat_counts is not None and len(cat_counts) > 0:
                     for i in range(len(mapped_list)):
                         if len(mapped_list[i]) == 0:
                             mapped_list[i] = ["other"]
-                    counts_for_plot = Counter([g for sub in mapped_list for g in sub])
+                    counts_for_plot = Counter(filtered_b)
         except Exception:
             pass
     # Movies
